@@ -130,6 +130,10 @@ async function processWithAI(opts: {
   if (!globalSettings.apiKey) {
     throw new Error('API key not configured');
   }
+  const config = requestConfig(globalSettings);
+  if (!config.model) {
+    throw new Error('Select a model in settings');
+  }
 
   let textToProcess = '';
 
@@ -146,16 +150,6 @@ async function processWithAI(opts: {
   }
 
   const userPrompt = opts.userPromptTemplate.replaceAll('{{text}}', () => textToProcess);
-
-  const config: AIRequestConfig = {
-    provider: globalSettings.provider || 'openai',
-    apiKey: globalSettings.apiKey,
-    model: globalSettings.model || 'gpt-4o',
-    baseUrl: globalSettings.baseUrl,
-    temperature: globalSettings.temperature,
-    maxTokens: globalSettings.maxTokens,
-    timeout: globalSettings.timeout
-  };
 
   log(`Calling AI with provider: ${config.provider}, model: ${JSON.stringify(config.model)}`);
 
@@ -185,7 +179,7 @@ function resetLater(id: string, delay: number, fn: () => Promise<void>): void {
 function requestConfig(settings: GlobalSettings): AIRequestConfig {
   return {
     provider: settings.provider || 'openai', apiKey: settings.apiKey || '',
-    model: settings.model || 'gpt-4o', baseUrl: settings.baseUrl,
+    model: settings.model?.trim() ?? 'gpt-4o', baseUrl: settings.baseUrl,
     temperature: settings.temperature, maxTokens: settings.maxTokens, timeout: settings.timeout
   };
 }
@@ -287,12 +281,12 @@ class PromptSelectorAction extends SingletonAction<EncoderSettings> {
   private encoderSettings = new Map<string, EncoderSettings>();
 
   private getActivePresets(settings: EncoderSettings): typeof PRESETS {
-    if (!settings.encoderPresets || settings.encoderPresets.length === 0) {
+    if (!Array.isArray(settings.encoderPresets) || settings.encoderPresets.length === 0) {
       return PRESETS;
     }
 
     return settings.encoderPresets
-      .filter(p => p.enabled)
+      .filter(p => p?.enabled)
       .map(p => PRESETS.find(preset => preset.key === p.key))
       .filter((p): p is typeof PRESETS[0] => p !== undefined);
   }
@@ -385,23 +379,20 @@ class PromptSelectorAction extends SingletonAction<EncoderSettings> {
   private async executePreset(ev: { action: any }, contextId: string, settings: EncoderSettings, source: string): Promise<void> {
     if (busy) { await ev.action.showAlert(); return; }
     busy = true;
-    clearStatus(contextId);
-    this.encoderSettings.set(contextId, settings);
-
-    const activePresets = this.getActivePresets(settings);
-    const index = this.getIndex(contextId, activePresets.length);
-    const preset = activePresets[index];
-
-    if (!preset) {
-      busy = false;
-      log(`${source}: no active presets`);
-      await ev.action.showAlert();
-      return;
-    }
-
-    log(`${source}: executing preset "${preset.name}"`);
-
     try {
+      clearStatus(contextId);
+      this.encoderSettings.set(contextId, settings);
+      const activePresets = this.getActivePresets(settings);
+      const index = this.getIndex(contextId, activePresets.length);
+      const preset = activePresets[index];
+      if (!preset) {
+        log(`${source}: no active presets`);
+        await ev.action.showAlert();
+        return;
+      }
+
+      log(`${source}: executing preset "${preset.name}"`);
+
       await ev.action.setFeedback({
         title: preset.name,
         value: 'Processing...',

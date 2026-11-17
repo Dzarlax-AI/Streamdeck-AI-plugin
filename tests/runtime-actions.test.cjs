@@ -82,3 +82,15 @@ test('guard releases after failure and both actions respond to connection probes
   assert.equal(t.replies[0].event,'connectionTestResult');
   assert.equal(t.replies[0].requestId,'id');
 });
+
+test('malformed saved encoder presets cannot block subsequent AI actions', async () => {
+  const t = setup();
+  t.release();
+  const dial = new t.mod.PromptSelectorAction();
+  const button = new t.mod.AITextAction();
+  const action = t.action('a');
+  await dial.onDialDown({action, payload: {settings: {encoderPresets: [null]}}});
+  await button.onKeyDown({action, payload: {settings: {postAction: 'copy'}}});
+  assert.equal(t.captures, 1);
+  assert.deepEqual(t.writes, ['result']);
+});

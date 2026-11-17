@@ -96,13 +96,10 @@ function requestOptions(config: AIRequestConfig) {
 }
 
 const metadata = new Map<string, { expires: number; model: ModelInfo }>();
-const verified = new Map<string, { expires: number; omitTemperature: boolean }>();
+const unsupportedTemperature = new Map<string, { expires: number }>();
 const TTL = 3600000;
 function identity(config: AIRequestConfig): string {
     return createHash('sha256').update(JSON.stringify([config.provider, endpoints(config).generate, config.apiKey, config.model])).digest('hex');
-}
-function profileKey(config: AIRequestConfig): string {
-    return createHash('sha256').update(JSON.stringify([identity(config), config.temperature ?? 0.7, config.maxTokens ?? 4096])).digest('hex');
 }
 function put<T>(map: Map<string, T>, key: string, value: T, capacity = 100): void {
     map.delete(key); map.set(key, value);
@@ -205,7 +202,8 @@ export async function testConnection(config: AIRequestConfig): Promise<{ success
         const result = await listModels(config);
         const found = result.models.some(item => item.id === config.model);
         const catalog = config.provider === 'openrouter' ? 'Model catalog reachable; key validity not confirmed.' : 'Model catalog reachable.';
-        return { success: true, message: `${catalog} Selected model ${found ? 'is listed' : 'was not found in this list'}.${result.truncated ? ' Catalog results are partial.' : ''} Generation was not tested.` };
+        const selection = config.model ? `Selected model ${found ? 'is listed' : 'was not found in this list'}.` : 'No model selected.';
+        return { success: true, message: `${catalog} ${selection}${result.truncated ? ' Catalog results are partial.' : ''} Generation was not tested.` };
     } catch (error: any) { return { success: false, message: extractAPIError(error) }; }
 }
 
@@ -228,14 +226,21 @@ function tempUnsupported(error: any): boolean {
     const detail = error?.response?.data?.error;
     return error?.response?.status === 400 && detail?.code === 'unsupported_parameter' && detail?.param === 'temperature';
 }
-async function generate(system: string, user: string, config: AIRequestConfig, probe: boolean, omitTemperature: boolean): Promise<AIResponse> {
-    const info = resolveCapabilities(config);
+function generationParameters(config: AIRequestConfig, probe: boolean, omitTemperature: boolean) {
+    if (!config.model.trim()) throw new OutputError('Select a model in settings');
+    const capabilities = resolveCapabilities(config);
+    if (omitTemperature) capabilities.temperatureSupport = 'unsupported';
     const temperature = config.temperature ?? 0.7;
-    const maxTokens = config.maxTokens ?? 4096;
-    const includeTemp = !omitTemperature && info.temperatureSupport !== 'unsupported' && !(config.provider === 'anthropic' && info.temperatureSupport === 'unknown');
-    const tokenLimit = probe ? Math.min(info.reasoning === false ? 1 : 128, info.outputTokenLimit ?? 128) : maxTokens;
-    if (includeTemp && (!Number.isFinite(temperature) || temperature < 0 || (info.temperatureMax !== undefined && temperature > info.temperatureMax) || temperature > 2)) throw new OutputError('Temperature is outside the supported range');
-    if (!Number.isInteger(tokenLimit) || tokenLimit < 1 || (info.outputTokenLimit !== undefined && tokenLimit > info.outputTokenLimit)) throw new OutputError('Token limit is outside the supported range');
+    const temperatureIncluded = capabilities.temperatureSupport !== 'unsupported' && !(config.provider === 'anthropic' && capabilities.temperatureSupport === 'unknown');
+    const maxTokens = probe ? Math.min(capabilities.reasoning === false ? 1 : 128, capabilities.outputTokenLimit ?? 128) : (config.maxTokens ?? 4096);
+    if (temperatureIncluded && (!Number.isFinite(temperature) || temperature < 0 || (capabilities.temperatureMax !== undefined && temperature > capabilities.temperatureMax) || temperature > 2)) throw new OutputError('Temperature is outside the supported range');
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || (capabilities.outputTokenLimit !== undefined && maxTokens > capabilities.outputTokenLimit)) throw new OutputError('Token limit is outside the supported range');
+    const usedParameters = { maxTokens, temperatureIncluded, ...(temperatureIncluded ? { temperature } : {}) };
+    return { capabilities, usedParameters };
+}
+
+async function generate(system: string, user: string, config: AIRequestConfig, probe: boolean, parameters: ReturnType<typeof generationParameters>['usedParameters']): Promise<AIResponse> {
+    const { maxTokens: tokenLimit, temperatureIncluded: includeTemp, temperature } = parameters;
     const body = config.provider === 'anthropic' ? { model: config.model, system, messages:[{role:'user',content:user}], max_tokens:tokenLimit, ...(includeTemp ? {temperature} : {}) }
         : config.provider === 'gemini' ? { contents:[{parts:[{text:user}]}], systemInstruction:{parts:[{text:system}]}, generationConfig:{maxOutputTokens:tokenLimit, ...(includeTemp ? {temperature} : {})} }
         : { model:config.model, messages:[{role:'system',content:system},{role:'user',content:user}], ...(config.provider === 'custom' ? {max_tokens:tokenLimit} : {max_completion_tokens:tokenLimit}), ...(includeTemp ? {temperature} : {}) };
@@ -246,24 +251,26 @@ async function generate(system: string, user: string, config: AIRequestConfig, p
 }
 
 export async function callAI(systemPrompt: string, userPrompt: string, config: AIRequestConfig): Promise<AIResponse> {
-    try { return await generate(systemPrompt, userPrompt, config, false, getCurrent(verified, profileKey(config))?.omitTemperature ?? false); }
+    try {
+        const omitTemperature = !!getCurrent(unsupportedTemperature, identity(config));
+        const { usedParameters } = generationParameters(config, false, omitTemperature);
+        return await generate(systemPrompt, userPrompt, config, false, usedParameters);
+    }
     catch (error: any) { if (error instanceof OutputError) throw error; throw new Error(extractAPIError(error)); }
 }
 
 export async function testGeneration(config: AIRequestConfig): Promise<{ success: boolean; status: 'verified'|'inconclusive'|'error'; message: string; capabilities?: ModelInfo; usedParameters?: Record<string,string|number|boolean> }> {
-    let omit = getCurrent(verified, profileKey(config))?.omitTemperature ?? false;
+    const key = identity(config);
+    let omit = !!getCurrent(unsupportedTemperature, key);
     for (let attempt = 0; attempt < 2; attempt++) {
+        let sentTemperature = false;
         try {
-            await generate('You are a helpful assistant.', 'Reply with OK.', config, true, omit);
-            const capabilities = resolveCapabilities(config);
-            if (omit) capabilities.temperatureSupport = 'unsupported';
-            put(verified, profileKey(config), {expires:Date.now()+TTL, omitTemperature:omit});
-            const budget = Math.min(capabilities.reasoning === false ? 1 : 128, capabilities.outputTokenLimit ?? 128);
-            const temperatureIncluded = !omit && capabilities.temperatureSupport !== 'unsupported' && !(config.provider === 'anthropic' && capabilities.temperatureSupport === 'unknown');
-            return {success:true,status:'verified',message: config.provider === 'custom' ? 'Generation returned visible text; normal token limit was not tested and endpoint enforcement is unverified.' : 'Generation returned visible text; normal token limit was not tested.',capabilities,usedParameters:{maxTokens:budget,temperatureIncluded,...(temperatureIncluded ? {temperature:config.temperature ?? 0.7} : {})}};
+            const { capabilities, usedParameters } = generationParameters(config, true, omit);
+            sentTemperature = usedParameters.temperatureIncluded;
+            await generate('You are a helpful assistant.', 'Reply with OK.', config, true, usedParameters);
+            if (attempt > 0) put(unsupportedTemperature, key, { expires: Date.now() + TTL });
+            return {success:true,status:'verified',message: config.provider === 'custom' ? 'Generation returned visible text; normal token limit was not tested and endpoint enforcement is unverified.' : 'Generation returned visible text; normal token limit was not tested.',capabilities,usedParameters};
         } catch (error: any) {
-            const info = resolveCapabilities(config);
-            const sentTemperature = info.temperatureSupport !== 'unsupported' && !(config.provider === 'anthropic' && info.temperatureSupport === 'unknown');
             if (attempt === 0 && config.provider !== 'custom' && !omit && sentTemperature && tempUnsupported(error)) { omit = true; continue; }
             if (error instanceof OutputError && error.message.startsWith('No text')) return {success:false,status:'inconclusive',message:'Request accepted but no visible text was returned; generation remains unverified.'};
             return {success:false,status:'error',message:error instanceof OutputError ? error.message : extractAPIError(error)};

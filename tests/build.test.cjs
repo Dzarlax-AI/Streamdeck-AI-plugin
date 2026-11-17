@@ -1,9 +1,25 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
+
+test('SDK QA exits promptly for missing, invalid, or incomplete manifests', t => {
+  const plugin = fs.mkdtempSync(path.join(os.tmpdir(), 'streamdeck-invalid-'));
+  t.after(() => fs.rmSync(plugin, {recursive: true, force: true}));
+  fs.mkdirSync(path.join(plugin, 'bin'));
+  fs.writeFileSync(path.join(plugin, 'bin', 'launcher.js'), '');
+  for (const contents of [null, '{', '{}']) {
+    if (contents !== null) fs.writeFileSync(path.join(plugin, 'manifest.json'), contents);
+    const result = spawnSync(process.execPath, [path.join(root, 'scripts/sdk-qa.cjs'), plugin], {encoding: 'utf8', timeout: 2000});
+    assert.ifError(result.error);
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /manifest/i);
+  }
+});
 test('source manifest release version matches package version', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json')));
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json')));

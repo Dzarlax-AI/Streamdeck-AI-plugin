@@ -30,8 +30,9 @@ The plugin stores the following settings **locally** on your device via Stream D
 - API provider selection
 - User-provided API key (kept in global settings, not in exported action settings)
 - Model selection
-- Custom prompts
 - User preferences (temperature, timeout, etc.)
+
+Custom prompts are stored locally in the settings for each action.
 
 ## No Analytics
 

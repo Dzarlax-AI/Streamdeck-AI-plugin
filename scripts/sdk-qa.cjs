@@ -13,6 +13,7 @@ if (!pluginPath || !fs.existsSync(path.join(pluginPath, 'bin/launcher.js'))) {
 }
 
 (async () => {
+  const manifest = readManifest();
   let generations = 0;
   const api = http.createServer(async (request, response) => {
     assert.equal(request.headers.authorization, 'Bearer dummy-key');
@@ -39,7 +40,6 @@ if (!pluginPath || !fs.existsSync(path.join(pluginPath, 'bin/launcher.js'))) {
   await once(api, 'listening');
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await once(wss, 'listening');
-  const manifest = JSON.parse(fs.readFileSync(path.join(pluginPath, 'manifest.json'), 'utf8'));
   const info = {
     application: { version: '7.4.2', platform: process.platform === 'win32' ? 'windows' : 'mac', platformVersion: '13.5', language: 'en' },
     plugin: { uuid: manifest.UUID, version: manifest.Version },
@@ -113,3 +113,17 @@ if (!pluginPath || !fs.existsSync(path.join(pluginPath, 'bin/launcher.js'))) {
     await new Promise(resolve => api.close(resolve));
   }
 })().catch(error => { console.error(error.message); process.exitCode = 1; });
+
+function readManifest() {
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(path.join(pluginPath, 'manifest.json'), 'utf8'));
+  } catch (error) {
+    throw new Error(`Cannot read plugin manifest: ${error.message}`);
+  }
+  if (typeof manifest?.UUID !== 'string' || !manifest.UUID.trim() ||
+      typeof manifest?.Version !== 'string' || !manifest.Version.trim()) {
+    throw new Error('Plugin manifest must specify UUID and Version');
+  }
+  return manifest;
+}

@@ -30,7 +30,7 @@ AI-powered text processing plugin for Elgato Stream Deck. Capture selected text 
 ## Configuration
 
 1. Drag an **AI Text Action** or **AI Prompt Selector** to your Stream Deck
-2. Select a preset, input source, and result behavior. Expand **Custom prompt** to edit the prompts.
+2. For **AI Text Action**, select a preset, input source, and result behavior. Expand **Custom prompt** to edit the prompts. **AI Prompt Selector** runs the current preset on selected text.
 3. Expand **AI connection**, select your provider, and enter your API key. These settings are shared by every AI action.
 4. Choose a model or enter its ID manually. **Fetch** loads available models through the plugin. **Check access** reads the catalog; for OpenRouter this public catalog does not verify the key. **Test generation** separately sends a fixed, impersonal prompt and uses tokens.
 5. Expand **Advanced parameters** for temperature, token limit, and timeout. Changes save automatically.
@@ -88,4 +88,4 @@ Your text is sent directly from your computer to the selected AI provider's API.
 
 Generation tests use the same provider request builder as actions, with a reduced output budget: 1 token for a known nonreasoning model, up to 128 for reasoning or unknown models. Input tokens are billed separately. The budget is never raised automatically. A nonempty short response verifies the probe; accepted requests without visible text remain inconclusive. The normal output limit is not tested. Only a structured unsupported-temperature rejection can trigger one retry (Custom is never retried). Custom servers may ignore parameters, so their budget enforcement cannot be proven by this test. No clipboard content or action prompts are sent.
 
-Model metadata and learned temperature omissions are held in bounded, one-hour session caches. A learned profile is tied to the provider, endpoint, key, model, temperature, and normal token limit. Unknown capabilities remain unknown; model access and parameter semantics require provider confirmation. Ordinary actions reject empty, blocked, or truncated responses before copying or pasting.
+Model metadata and learned temperature omissions are held in bounded, one-hour session caches. A learned temperature omission is tied to the provider, endpoint, key, and model. Unknown capabilities remain unknown; model access and parameter semantics require provider confirmation. Ordinary actions reject empty, blocked, or truncated responses before copying or pasting.

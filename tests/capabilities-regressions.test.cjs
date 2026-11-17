@@ -59,7 +59,32 @@ test('probe retries only structured unsupported temperature and caches per exact
   rejectTemp=false;
   await api.callAI('s','u',config); assert.equal(Object.hasOwn(bodies.at(-1),'temperature'),false);
   await api.callAI('s','u',{...config,apiKey:'b'}); assert.equal(bodies.at(-1).temperature,0.5);
-  await api.callAI('s','u',{...config,temperature:0.6}); assert.equal(bodies.at(-1).temperature,0.6);
+  await api.callAI('s','u',{...config,maxTokens:2000}); assert.equal(Object.hasOwn(bodies.at(-1),'temperature'),false);
+  await api.callAI('s','u',{...config,temperature:0.6}); assert.equal(Object.hasOwn(bodies.at(-1),'temperature'),false);
+  await api.callAI('s','u',{...config,model:'other'}); assert.equal(bodies.at(-1).temperature,0.5);
+});
+
+test('probe reports the parameters it sent even when catalog metadata expires mid-request', async () => {
+  let now = 0;
+  const api = loadTS('src/api-client.ts', {
+    'node:crypto': require('node:crypto'),
+    axios: {
+      get: async () => ({data: {data: [{id: 'm', supported_parameters: [], top_provider: {max_completion_tokens: 64}}]}}),
+      post: async (_url, body) => {
+        assert.equal(body.max_completion_tokens, 64);
+        assert.equal(Object.hasOwn(body, 'temperature'), false);
+        now += 3600001;
+        return {data: {choices: [{message: {content: 'OK'}}]}};
+      }
+    }
+  }, '', {Date: {now: () => now}});
+  const config = {provider: 'openrouter', apiKey: 'fixture', model: 'm'};
+  await api.listModels(config);
+  const result = await api.testGeneration(config);
+  assert.equal(result.status, 'verified');
+  assert.equal(result.usedParameters.maxTokens, 64);
+  assert.equal(result.usedParameters.temperatureIncluded, false);
+  assert.equal(result.capabilities.outputTokenLimit, 64);
 });
 
 test('unauthorized and empty probe results do not retry', async () => {

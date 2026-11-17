@@ -27,7 +27,7 @@ let generationRequestId = null;
 let generationTimeoutId = null;
 let generationTestSignature = null;
 let providerConnectionRevision = 0;
-let modelCacheRevisionByProvider = {};
+const trustedModelCapabilities = new Map();
 let receivedGlobalSettings = false;
 
 function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
@@ -67,7 +67,10 @@ const { getModelsEndpoint, validateNumericSettings, temperatureOrDefault, saniti
 
 async function fetchModels() {
   invalidateModelFetch();
-  if (!saveSettings()) return;
+  if (!saveSettings()) {
+    finishModelRequest('Fix the highlighted settings before fetching models.');
+    return;
+  }
   const provider = document.getElementById('provider').value;
   const apiKey = document.getElementById('apiKey').value.trim();
   const baseUrl = document.getElementById('baseUrl').value.trim();
@@ -119,13 +122,19 @@ function handleModelsResult(result) {
   }
 
   const provider = document.getElementById('provider').value;
-  const selectedModel = getSelectedModel() || globalSettings.model || '';
+  const selectedModel = getSelectedModel();
   globalSettings.modelCache = globalSettings.modelCache || {};
   globalSettings.modelCache[provider] = models;
-  modelCacheRevisionByProvider[provider] = providerConnectionRevision;
+  trustedModelCapabilities.set(provider, {
+    revision: providerConnectionRevision,
+    models: new Map(models.map(model => [model.id, model]))
+  });
   populateModelSelect(models, selectedModel);
   updateModelCapabilities();
-  saveSettings();
+  if (!saveSettings()) {
+    finishModelRequest('Catalogue received. Settings were not saved. Fix the highlighted settings.');
+    return;
+  }
   const suffix = result.truncated ? ' (catalogue truncated)' : '';
   finishModelRequest(models.length ? `${models.length} models loaded${suffix}` : `No models found${suffix}`);
 }
@@ -198,13 +207,17 @@ function updateUI(initial = !receivedGlobalSettings) {
 
 function saveSettings() {
   const modelInfo = getSelectedModelInfo();
-  const numeric = validateNumericSettings(document.getElementById('maxTokens'), document.getElementById('timeout'), modelInfo, document.getElementById('temperature'));
+  const numeric = validateNumericSettings(
+    document.getElementById('maxTokens'), document.getElementById('timeout'),
+    modelInfo, document.getElementById('temperature'), document.getElementById('advancedDetails')
+  );
+  document.getElementById('settingsSaveStatus').textContent = numeric ? '' : 'Settings were not saved. Fix the highlighted settings.';
   if (!numeric) return false;
   globalSettings = {
     provider: document.getElementById('provider').value,
     apiKey: document.getElementById('apiKey').value,
     baseUrl: document.getElementById('provider').value === 'custom' ? document.getElementById('baseUrl').value : '',
-    model: getSelectedModel(),
+    model: getSelectedModel().trim(),
     temperature: parseFloat(document.getElementById('temperature').value),
     maxTokens: numeric.maxTokens,
     timeout: numeric.timeout,
@@ -224,8 +237,9 @@ function getSelectedModelInfo() {
 
 function modelsForCurrentConnection(provider) {
   const models = sanitizeModelInfo((globalSettings.modelCache || {})[provider]);
-  if (modelCacheRevisionByProvider[provider] === providerConnectionRevision) return models;
-  return models.map(model => ({ id: model.id, name: model.name, temperatureSupport: 'unknown' }));
+  const trusted = trustedModelCapabilities.get(provider);
+  const current = trusted?.revision === providerConnectionRevision ? trusted.models : null;
+  return models.map(({ id, name }) => current?.get(id) || { id, name, temperatureSupport: 'unknown' });
 }
 
 function updateModelCapabilities() {
@@ -233,7 +247,6 @@ function updateModelCapabilities() {
   const temperature = document.getElementById('temperature');
   const temperatureHint = document.getElementById('temperatureHint');
   temperature.disabled = info?.temperatureSupport === 'unsupported';
-  temperature.max = Number.isFinite(info?.temperatureMax) ? String(Math.min(2, info.temperatureMax)) : '2';
   temperatureHint.textContent = info?.temperatureSupport === 'unsupported'
     ? 'This model does not support temperature.'
     : info?.temperatureSupport === 'supported'
@@ -267,7 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const p = document.getElementById('provider').value;
     document.getElementById('fetchStatus').textContent = '';
     const cached = modelsForCurrentConnection(p);
-    populateModelSelect(cached, getSelectedModel());
+    populateModelSelect(cached, '');
     updateModelCapabilities();
     saveSettings();
   });
@@ -321,7 +334,7 @@ function testConnection() {
     try { if (!getModelsEndpoint(provider, document.getElementById('baseUrl').value.trim())) throw new Error(); }
     catch (_) { return showConnectionResult(false, 'Enter a valid HTTP or HTTPS custom endpoint URL'); }
   }
-  if (!saveSettings()) return;
+  if (!saveSettings()) return showConnectionResult(false, 'Fix the highlighted settings before checking access.');
   if (!websocket) return showConnectionResult(false, 'Stream Deck connection is unavailable');
   connectionRequestId = `connection-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   connectionTestSignature = currentConnectionSignature();
@@ -418,6 +431,7 @@ function testGeneration() {
     try { if (!getModelsEndpoint(provider, document.getElementById('baseUrl').value.trim())) throw new Error(); }
     catch (_) { return showGenerationStatus('error', 'Enter a valid HTTP or HTTPS custom endpoint URL.'); }
   }
+  if (!getSelectedModel().trim()) return showGenerationStatus('error', 'Select a model before testing generation.');
   if (!saveSettings()) return showGenerationStatus('error', 'Fix the highlighted settings before testing.');
   if (!websocket) return showGenerationStatus('error', 'Stream Deck connection is unavailable.');
 
@@ -447,17 +461,20 @@ function currentGenerationSignature() {
 function applyGenerationCapabilities(capabilities) {
   if (!capabilities || typeof capabilities !== 'object') return;
   const provider = document.getElementById('provider').value;
-  const id = getSelectedModel();
-  if (!id) return;
+  const id = getSelectedModel().trim();
+  if (!id || capabilities.id !== id) return;
   const candidate = sanitizeModelInfo([{ id, name: id, ...capabilities }])[0];
   if (!candidate || !Object.keys(capabilities).some(key => ['temperatureSupport', 'temperatureMax', 'outputTokenLimit', 'reasoning'].includes(key))) return;
-  const models = sanitizeModelInfo((globalSettings.modelCache || {})[provider]);
+  const models = modelsForCurrentConnection(provider);
   const index = models.findIndex(model => model.id === id);
-  if (index >= 0) models[index] = { ...models[index], ...candidate };
+  if (index >= 0) models[index] = candidate;
   else models.push(candidate);
   globalSettings.modelCache = globalSettings.modelCache || {};
   globalSettings.modelCache[provider] = models;
-  modelCacheRevisionByProvider[provider] = providerConnectionRevision;
+  const trusted = trustedModelCapabilities.get(provider);
+  const current = trusted?.revision === providerConnectionRevision ? trusted.models : new Map();
+  current.set(id, candidate);
+  trustedModelCapabilities.set(provider, { revision: providerConnectionRevision, models: current });
   updateModelCapabilities();
   saveSettings();
 }
@@ -467,7 +484,7 @@ function updateConnectionSummary() {
   if (!summary) return;
   const provider = document.getElementById('provider')?.value || globalSettings.provider || 'openai';
   const hasKey = !!document.getElementById('apiKey')?.value.trim();
-  const model = getSelectedModel() || globalSettings.model || 'no model';
+  const model = getSelectedModel().trim() || 'no model';
   summary.textContent = `${provider} · ${model} · ${hasKey ? 'key set' : 'key needed'}`;
   const modelId = document.getElementById('modelIdText');
   if (modelId) modelId.textContent = `Selected model: ${model}`;

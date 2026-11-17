@@ -47,29 +47,29 @@
     return models.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  function validateNumericSettings(maxTokensEl, timeoutEl, modelInfo = null, temperatureEl = null) {
+  function validateNumericSettings(maxTokensEl, timeoutEl, modelInfo, temperatureEl, advancedDetails) {
+    function invalid(control, message) {
+      if (advancedDetails) advancedDetails.open = true;
+      control.setCustomValidity?.(message);
+      control.reportValidity?.();
+      return null;
+    }
     maxTokensEl.setCustomValidity?.('');
     timeoutEl.setCustomValidity?.('');
+    temperatureEl?.setCustomValidity?.('');
     const maxTokens = parseInt(maxTokensEl.value, 10);
     const timeout = parseInt(timeoutEl.value, 10);
     const modelLimit = Number(maxTokensEl.dataset.modelLimit);
     const maxAllowed = Number.isFinite(modelLimit) && modelLimit >= 1 ? Math.min(128000, modelLimit) : 128000;
     if (!Number.isFinite(maxTokens) || maxTokens < 100 || maxTokens > maxAllowed) {
-      maxTokensEl.setCustomValidity?.(maxTokens > maxAllowed ? `Selected model allows at most ${maxAllowed} output tokens` : `Enter a value from 100 to ${maxAllowed}`);
-      maxTokensEl.reportValidity?.();
-      return null;
+      return invalid(maxTokensEl, maxTokens > maxAllowed ? `Selected model allows at most ${maxAllowed} output tokens` : `Enter a value from 100 to ${maxAllowed}`);
     }
     if (!Number.isFinite(timeout) || timeout < 5 || timeout > 120) {
-      timeoutEl.setCustomValidity?.('Enter a value from 5 to 120 seconds');
-      timeoutEl.reportValidity?.();
-      return null;
+      return invalid(timeoutEl, 'Enter a value from 5 to 120 seconds');
     }
     if (temperatureEl && modelInfo?.temperatureSupport === 'supported' && Number.isFinite(modelInfo.temperatureMax)) {
-      temperatureEl.setCustomValidity?.('');
       if (parseFloat(temperatureEl.value) > modelInfo.temperatureMax) {
-        temperatureEl.setCustomValidity?.(`Selected model supports temperature up to ${modelInfo.temperatureMax}`);
-        temperatureEl.reportValidity?.();
-        return null;
+        return invalid(temperatureEl, `Selected model supports temperature up to ${modelInfo.temperatureMax}`);
       }
     }
     return { maxTokens, timeout };

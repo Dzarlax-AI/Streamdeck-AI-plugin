@@ -269,3 +269,64 @@ test('completed generation status and model capabilities are invalidated after c
     assert.equal(h.elements.temperature.disabled,false);
   }
 });
+
+for (const [file, connectionStatus] of [
+  ['property-inspector/js/property-inspector.js', 'connectionStatus'],
+  ['global-settings/js/global-settings.js', 'connectionText']
+]) {
+  test(`${file}: changing providers clears the previous model ID`, () => {
+    const h = harness(file); h.ready();
+    h.elements.provider.value = 'anthropic';
+    h.elements.provider.listeners.change();
+    assert.equal(h.context.getSelectedModel(), '');
+    assert.equal(h.sent.at(-1).payload.model, '');
+    h.context.testGeneration();
+    assert.match(h.elements.generationStatus.textContent, /select a model/i);
+    assert.equal(h.sent.some(message => message.payload.event === 'testGeneration'), false);
+  });
+
+  test(`${file}: probing one model does not restore another model's stale limits`, () => {
+    const h = harness(file); h.ready();
+    modelReply(h, beginFetch(h), [
+      {id: 'old-model', name: 'Current', temperatureSupport: 'unsupported', outputTokenLimit: 5000},
+      {id: 'other', name: 'Other', temperatureSupport: 'supported'}
+    ]);
+    h.elements.apiKey.value = 'new-key';
+    h.elements.apiKey.listeners.input();
+    h.elements.modelSelect.value = 'other';
+    h.elements.modelSelect.listeners.change();
+    h.context.testGeneration();
+    h.context.handleGenerationTestResult({
+      requestId: h.sent.at(-1).payload.requestId, success: true, status: 'verified',
+      capabilities: {id: 'other', temperatureSupport: 'unsupported'}
+    });
+    assert.equal(h.elements.temperature.disabled, true);
+    h.elements.modelSelect.value = 'old-model';
+    h.elements.modelSelect.listeners.change();
+    assert.equal(h.elements.temperature.disabled, false);
+    assert.equal(h.elements.maxTokens.dataset.modelLimit, '');
+  });
+
+  test(`${file}: failed saves open advanced settings and explain why requests stopped`, () => {
+    const h = harness(file); h.ready();
+    h.elements.maxTokens.reportValidity = () => assert.equal(h.elements.advancedDetails.open, true);
+    const requestId = beginFetch(h);
+    modelReply(h, requestId, [{id: 'old-model', name: 'Current', outputTokenLimit: 2048}]);
+    assert.equal(h.elements.advancedDetails.open, true);
+    assert.match(h.elements.fetchStatus.textContent, /settings.*not saved/i);
+    assert.equal(h.sent.filter(message => message.event === 'setGlobalSettings').length, 1);
+    h.elements.advancedDetails.open = false;
+    h.elements.modelSelect.listeners.change();
+    assert.equal(h.elements.advancedDetails.open, true);
+    assert.match(h.elements.settingsSaveStatus.textContent, /not saved/i);
+    h.context.fetchModels();
+    assert.match(h.elements.fetchStatus.textContent, /fix the highlighted settings/i);
+    h.context.testConnection();
+    assert.match(h.elements[connectionStatus].textContent, /fix the highlighted settings/i);
+    assert.equal(h.sent.filter(message => message.event === 'sendToPlugin').length, 1);
+    h.elements.maxTokens.value = '2000';
+    h.elements.maxTokens.listeners.change();
+    assert.equal(h.elements.settingsSaveStatus.textContent, '');
+    assert.equal(h.sent.at(-1).payload.maxTokens, 2000);
+  });
+}
