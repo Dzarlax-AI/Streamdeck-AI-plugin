@@ -21,7 +21,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
@@ -30,11 +30,8 @@ jobs:
       - name: Build plugin
         run: npm run build
 
-      - name: Install Elgato CLI
-        run: npm install -g @elgato/cli
-
       - name: Pack plugin
-        run: streamdeck pack com.dzarlax.ai-assistant.sdPlugin
+        run: npm run pack
 
       - name: Generate changelog
         uses: orhun/git-cliff-action@v4

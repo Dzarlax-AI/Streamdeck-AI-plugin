@@ -94,12 +94,27 @@ let actionSettings = {
 
 let encoderSettings = {
   presetIndex: 0,
-  encoderPresets: DEFAULT_ENCODER_PRESETS
+  encoderPresets: DEFAULT_ENCODER_PRESETS.map(preset => ({ ...preset }))
 };
 
 let websocket = null;
 let uuid = null;
 let actionType = null; // 'text-action' or 'prompt-selector'
+let actionUUID = 'com.dzarlax.ai-assistant.text-action';
+let connectionRequestId = null;
+let connectionTimeoutId = null;
+let connectionTestSignature = null;
+let modelFetchVersion = 0;
+let modelsRequestId = null;
+let modelsRequestTimeoutId = null;
+let modelsRequestSignature = null;
+let modelsRequestVersion = null;
+let generationRequestId = null;
+let generationTimeoutId = null;
+let generationTestSignature = null;
+let providerConnectionRevision = 0;
+let modelCacheRevisionByProvider = {};
+let receivedGlobalSettings = false;
 
 function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, inActionInfo) {
   uuid = inUUID;
@@ -110,6 +125,7 @@ function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, 
     const actionInfo = JSON.parse(inActionInfo);
     // action is full UUID like "com.dzarlax.ai-assistant.prompt-selector"
     actionType = actionInfo.action.includes('prompt-selector') ? 'prompt-selector' : 'text-action';
+    actionUUID = actionInfo.action || actionUUID;
   } catch (e) {
     actionType = 'text-action'; // fallback
   }
@@ -137,10 +153,20 @@ function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, 
     if (data.event === 'didReceiveGlobalSettings') {
       const s = data.payload.settings;
       if (s && Object.keys(s).length > 0) {
+        const initial = !receivedGlobalSettings;
+        receivedGlobalSettings = true;
+        if (['provider', 'apiKey', 'baseUrl'].some(key => s[key] !== undefined && s[key] !== globalSettings[key])) providerConnectionRevision++;
         globalSettings = { ...globalSettings, ...s };
-        updateGlobalUI();
+        updateGlobalUI(initial);
+        if (generationTestSignature && generationTestSignature !== currentGenerationSignature()) invalidateGenerationTest();
       }
     }
+
+    if (data.event === 'sendToPropertyInspector' && data.payload?.event === 'connectionTestResult' && data.payload.requestId === connectionRequestId) {
+      completeConnectionTest(data.payload.requestId, data.payload.success, data.payload.message);
+    }
+    if (data.event === 'sendToPropertyInspector' && data.payload?.event === 'modelsResult') handleModelsResult(data.payload);
+    if (data.event === 'sendToPropertyInspector' && data.payload?.event === 'generationTestResult') handleGenerationTestResult(data.payload);
   };
 
   // Show/hide sections based on action type
@@ -149,51 +175,14 @@ function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, inInfo, 
 
 // --- Model fetching ---
 
-function getModelsEndpoint(provider, baseUrl) {
-  if (provider === 'openai') return { url: 'https://api.openai.com/v1/models', headers: {} };
-  if (provider === 'anthropic') return { url: 'https://api.anthropic.com/v1/models', headers: { 'anthropic-version': '2023-06-01' } };
-  if (provider === 'gemini') return { url: 'https://generativelanguage.googleapis.com/v1beta/models', headers: {} };
-  if (provider === 'openrouter') return { url: 'https://openrouter.ai/api/v1/models', headers: {} };
-  if (provider === 'custom' && baseUrl) {
-    const base = baseUrl.replace(/\/chat\/completions\/?$/, '').replace(/\/$/, '');
-    return { url: base + '/models', headers: {} };
-  }
-  return null;
-}
+const { getModelsEndpoint, validateNumericSettings, temperatureOrDefault, sanitizeModelInfo, findModelInfo, generationTestTimeout } = AISettings;
 
-function parseModelsResponse(provider, data) {
-  if (provider === 'anthropic') {
-    return (data.data || [])
-      .map(m => ({ id: m.id, name: m.display_name || m.id }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  if (provider === 'gemini') {
-    return (data.models || [])
-      .map(m => {
-        const id = m.name.replace('models/', '');
-        return { id, name: m.displayName || id };
-      })
-      .filter(m => m.id.startsWith('gemini'))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  let models = (data.data || []).map(m => ({ id: m.id, name: m.name || m.id }));
-
-  if (provider === 'openai') {
-    models = models.filter(m =>
-      m.id.startsWith('gpt-') || m.id.startsWith('o1') ||
-      m.id.startsWith('o2') || m.id.startsWith('o3') || m.id.startsWith('o4')
-    );
-  }
-
-  return models.sort((a, b) => a.name.localeCompare(b.name));
-}
-
-async function fetchModels() {
-  const provider = globalSettings.provider;
-  const apiKey = globalSettings.apiKey;
-  const baseUrl = globalSettings.baseUrl;
+function fetchModels() {
+  invalidateModelFetch();
+  if (!saveGlobalSettings()) return;
+  const provider = document.getElementById('provider').value;
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const baseUrl = document.getElementById('baseUrl').value.trim();
   const statusEl = document.getElementById('fetchStatus');
   const btn = document.getElementById('fetchModelsBtn');
 
@@ -201,55 +190,73 @@ async function fetchModels() {
     statusEl.textContent = 'Enter API key first';
     return;
   }
-
-  const endpoint = getModelsEndpoint(provider, baseUrl);
-  if (!endpoint) {
-    statusEl.textContent = 'Cannot fetch for this provider';
+  if (provider === 'custom') {
+    try { if (!getModelsEndpoint(provider, baseUrl)) throw new Error(); }
+    catch (_) { statusEl.textContent = 'Enter a valid HTTP or HTTPS custom endpoint URL'; return; }
+  }
+  if (!websocket) {
+    statusEl.textContent = 'Stream Deck connection is unavailable';
     return;
   }
 
+  modelFetchVersion++;
+  modelsRequestVersion = modelFetchVersion;
+  modelsRequestId = `models-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  modelsRequestSignature = currentConnectionSignature();
   btn.disabled = true;
-  btn.textContent = '...';
-  statusEl.textContent = 'Loading...';
+  btn.textContent = 'Loading…';
+  statusEl.textContent = 'Loading model catalogue…';
+  const requestId = modelsRequestId;
+  modelsRequestTimeoutId = setTimeout(() => {
+    if (modelsRequestId === requestId) finishModelRequest('Model catalogue request timed out');
+  }, 30000);
+  websocket.send(JSON.stringify({ event: 'sendToPlugin', action: actionUUID, context: uuid, payload: { event: 'fetchModels', requestId } }));
+}
 
-  try {
-    const headers = { ...endpoint.headers, 'Content-Type': 'application/json' };
-    let url = endpoint.url;
-
-    if (apiKey) {
-      if (provider === 'anthropic') headers['x-api-key'] = apiKey;
-      else if (provider === 'gemini') url = endpoint.url + '?key=' + apiKey;
-      else headers['Authorization'] = 'Bearer ' + apiKey;
-    }
-
-    const resp = await fetch(url, { method: 'GET', headers });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-
-    const data = await resp.json();
-    const models = parseModelsResponse(provider, data);
-
-    if (models.length === 0) {
-      statusEl.textContent = 'No models found';
-    } else {
-      statusEl.textContent = models.length + ' models loaded';
-      if (!globalSettings.modelCache) globalSettings.modelCache = {};
-      globalSettings.modelCache[provider] = models;
-      saveGlobalSettings();
-      populateModelSelect(models);
-    }
-  } catch (err) {
-    statusEl.textContent = 'Failed: ' + err.message;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Fetch';
+function handleModelsResult(result) {
+  if (!result || result.requestId !== modelsRequestId) return;
+  if (modelsRequestVersion !== modelFetchVersion || modelsRequestSignature !== currentConnectionSignature()) {
+    finishModelRequest('Catalogue result ignored because connection settings changed');
+    return;
   }
+  if (!result.success) {
+    finishModelRequest(result.message || 'Model catalogue request failed');
+    return;
+  }
+  const models = sanitizeModelInfo(result.models);
+  if (result.models && models.length !== result.models.length) {
+    finishModelRequest('Catalogue response contained invalid model entries');
+    return;
+  }
+
+  const provider = document.getElementById('provider').value;
+  const selectedModel = getSelectedModel() || globalSettings.model || '';
+  globalSettings.modelCache = globalSettings.modelCache || {};
+  globalSettings.modelCache[provider] = models;
+  modelCacheRevisionByProvider[provider] = providerConnectionRevision;
+  populateModelSelect(models, selectedModel);
+  updateModelCapabilities();
+  saveGlobalSettings();
+  const suffix = result.truncated ? ' (catalogue truncated)' : '';
+  finishModelRequest(models.length ? `${models.length} models loaded${suffix}` : `No models found${suffix}`);
+}
+
+function finishModelRequest(message) {
+  clearTimeout(modelsRequestTimeoutId);
+  modelsRequestTimeoutId = null;
+  modelsRequestId = null;
+  modelsRequestVersion = null;
+  const status = document.getElementById('fetchStatus');
+  const btn = document.getElementById('fetchModelsBtn');
+  if (status) status.textContent = message;
+  if (btn) { btn.disabled = false; btn.textContent = 'Fetch'; }
 }
 
 // --- UI helpers ---
 
-function populateModelSelect(models) {
+function populateModelSelect(models, requestedModel = globalSettings.model || '') {
   const select = document.getElementById('modelSelect');
-  const current = globalSettings.model || '';
+  const current = requestedModel || '';
   select.innerHTML = '';
 
   models.forEach(m => {
@@ -259,60 +266,55 @@ function populateModelSelect(models) {
     select.appendChild(opt);
   });
 
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.textContent = 'Enter model ID…';
+  select.appendChild(customOpt);
+
   if (models.some(m => m.id === current)) {
     select.value = current;
-  } else if (models.length > 0) {
-    select.value = models[0].id;
+    document.getElementById('customModelGroup').style.display = 'none';
+  } else {
+    select.value = '__custom__';
+    document.getElementById('customModelInput').value = current;
+    document.getElementById('customModelGroup').style.display = 'block';
   }
 }
 
 function getSelectedModel() {
   const provider = document.getElementById('provider').value;
-  if (provider === 'custom') {
-    return document.getElementById('customModelInput').value || '';
-  }
-  return document.getElementById('modelSelect').value || '';
+  const select = document.getElementById('modelSelect');
+  return provider === 'custom' || select.value === '__custom__'
+    ? document.getElementById('customModelInput').value || ''
+    : select.value || '';
 }
 
 function updateModelUI(provider) {
   const isCustom = provider === 'custom';
   document.getElementById('modelSelectRow').style.display = isCustom ? 'none' : '';
-  document.getElementById('customModelGroup').style.display = isCustom ? 'block' : 'none';
-
-  if (isCustom) {
-    document.getElementById('customModelInput').value = globalSettings.model || '';
-  } else {
-    const cached = (globalSettings.modelCache || {})[provider];
-    if (cached && cached.length > 0) {
-      populateModelSelect(cached);
-      document.getElementById('fetchStatus').textContent = cached.length + ' models (cached)';
-    } else {
-      const select = document.getElementById('modelSelect');
-      select.innerHTML = '';
-      const currentModel = globalSettings.model || '';
-      if (currentModel) {
-        const opt = document.createElement('option');
-        opt.value = currentModel;
-        opt.textContent = currentModel;
-        select.appendChild(opt);
-      }
-      document.getElementById('fetchStatus').textContent = 'Click Fetch to load models';
-    }
-  }
+  const cached = modelsForCurrentConnection(provider);
+  populateModelSelect(cached, globalSettings.model || '');
+  document.getElementById('customModelGroup').style.display = isCustom || document.getElementById('modelSelect').value === '__custom__' ? 'block' : 'none';
+  document.getElementById('customModelInput').value = globalSettings.model || '';
+  document.getElementById('fetchStatus').textContent = cached.length ? `${cached.length} models cached` : 'Fetch the model catalogue to load available models.';
+  updateModelCapabilities();
 }
 
-function updateGlobalUI() {
+function updateGlobalUI(initial = !receivedGlobalSettings) {
   const provider = globalSettings.provider || 'openai';
   document.getElementById('provider').value = provider;
   document.getElementById('apiKey').value = globalSettings.apiKey || '';
   document.getElementById('baseUrl').value = globalSettings.baseUrl || '';
-  document.getElementById('temperature').value = globalSettings.temperature || 0.7;
-  document.getElementById('temperatureValue').textContent = globalSettings.temperature || 0.7;
+  document.getElementById('temperature').value = temperatureOrDefault(globalSettings.temperature);
+  document.getElementById('temperatureValue').textContent = temperatureOrDefault(globalSettings.temperature);
   document.getElementById('maxTokens').value = globalSettings.maxTokens || 4096;
   document.getElementById('timeout').value = globalSettings.timeout || 30;
 
   toggleBaseUrl();
   updateModelUI(provider);
+  updateConnectionSummary();
+  const connectionDetails = document.getElementById('connectionDetails');
+  if (connectionDetails && initial) connectionDetails.open = !(globalSettings.apiKey || '').trim();
 }
 
 function updateActionUI() {
@@ -324,19 +326,58 @@ function updateActionUI() {
 }
 
 function saveGlobalSettings() {
+  const modelInfo = getSelectedModelInfo();
+  const numeric = validateNumericSettings(document.getElementById('maxTokens'), document.getElementById('timeout'), modelInfo, document.getElementById('temperature'));
+  if (!numeric) return false;
   globalSettings = {
     provider: document.getElementById('provider').value,
     apiKey: document.getElementById('apiKey').value,
-    baseUrl: document.getElementById('baseUrl').value,
+    baseUrl: document.getElementById('provider').value === 'custom' ? document.getElementById('baseUrl').value : '',
     model: getSelectedModel(),
     temperature: parseFloat(document.getElementById('temperature').value),
-    maxTokens: parseInt(document.getElementById('maxTokens').value),
-    timeout: parseInt(document.getElementById('timeout').value),
+    maxTokens: numeric.maxTokens,
+    timeout: numeric.timeout,
     modelCache: globalSettings.modelCache || {}
   };
   if (websocket) {
     websocket.send(JSON.stringify({ event: 'setGlobalSettings', context: uuid, payload: globalSettings }));
   }
+  updateConnectionSummary();
+  return true;
+}
+
+function modelsForCurrentConnection(provider) {
+  const models = sanitizeModelInfo((globalSettings.modelCache || {})[provider]);
+  if (modelCacheRevisionByProvider[provider] === providerConnectionRevision) return models;
+  return models.map(model => ({ id: model.id, name: model.name, temperatureSupport: 'unknown' }));
+}
+
+function getSelectedModelInfo() {
+  const provider = document.getElementById('provider').value;
+  return findModelInfo({ [provider]: modelsForCurrentConnection(provider) }, provider, getSelectedModel());
+}
+
+function updateModelCapabilities() {
+  const info = getSelectedModelInfo();
+  const temperature = document.getElementById('temperature');
+  const temperatureHint = document.getElementById('temperatureHint');
+  temperature.disabled = info?.temperatureSupport === 'unsupported';
+  temperature.max = Number.isFinite(info?.temperatureMax) ? String(Math.min(2, info.temperatureMax)) : '2';
+  temperatureHint.textContent = info?.temperatureSupport === 'unsupported'
+    ? 'This model does not support temperature.'
+    : info?.temperatureSupport === 'supported'
+      ? (Number.isFinite(info.temperatureMax) ? `Supported up to ${Math.min(2, info.temperatureMax)}.` : 'Temperature is supported.')
+      : 'Temperature support not yet verified for this model.';
+
+  const maxTokens = document.getElementById('maxTokens');
+  const maxTokensHint = document.getElementById('maxTokensHint');
+  const outputLimit = Number.isFinite(info?.outputTokenLimit) && info.outputTokenLimit > 0 ? Math.min(128000, info.outputTokenLimit) : null;
+  maxTokens.dataset.modelLimit = outputLimit ? String(outputLimit) : '';
+  maxTokens.max = String(outputLimit || 128000);
+  const current = parseInt(maxTokens.value, 10);
+  maxTokensHint.textContent = outputLimit
+    ? (Number.isFinite(current) && current > outputLimit ? `Current value (${current}) exceeds this model's ${outputLimit} token limit; change it to save.` : `Selected model supports up to ${outputLimit} output tokens.`)
+    : 'Maximum output tokens not yet verified for this model.';
 }
 
 function saveActionSettings() {
@@ -407,14 +448,29 @@ function renderPresetList() {
 
     const item = document.createElement('div');
     item.className = 'preset-item' + (preset.enabled ? '' : ' disabled');
-    item.draggable = true;
+    item.draggable = false;
     item.dataset.index = index;
 
-    item.innerHTML = `
-      <span class="preset-drag">⋮⋮</span>
-      <input type="checkbox" class="preset-toggle" ${preset.enabled ? 'checked' : ''} data-key="${preset.key}">
-      <span class="preset-name">${presetInfo.actionName}</span>
-    `;
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'preset-toggle';
+    checkbox.checked = !!preset.enabled;
+    checkbox.dataset.key = preset.key;
+    checkbox.setAttribute('aria-label', `Show ${presetInfo.actionName} in encoder`);
+    const name = document.createElement('span');
+    name.className = 'preset-name';
+    name.textContent = presetInfo.actionName;
+    const moveUp = document.createElement('button');
+    moveUp.type = 'button'; moveUp.className = 'move-preset'; moveUp.textContent = '↑';
+    moveUp.setAttribute('aria-label', `Move ${presetInfo.actionName} up`);
+    moveUp.disabled = index === 0;
+    moveUp.addEventListener('click', () => moveEncoderPreset(index, -1));
+    const moveDown = document.createElement('button');
+    moveDown.type = 'button'; moveDown.className = 'move-preset'; moveDown.textContent = '↓';
+    moveDown.setAttribute('aria-label', `Move ${presetInfo.actionName} down`);
+    moveDown.disabled = index === presets.length - 1;
+    moveDown.addEventListener('click', () => moveEncoderPreset(index, 1));
+    item.appendChild(checkbox); item.appendChild(name); item.appendChild(moveUp); item.appendChild(moveDown);
 
     // Drag events
     item.addEventListener('dragstart', handleDragStart);
@@ -424,7 +480,6 @@ function renderPresetList() {
     item.addEventListener('dragleave', handleDragLeave);
 
     // Toggle event
-    const checkbox = item.querySelector('.preset-toggle');
     checkbox.addEventListener('change', (e) => {
       const key = e.target.dataset.key;
       const idx = encoderSettings.encoderPresets.findIndex(p => p.key === key);
@@ -437,6 +492,15 @@ function renderPresetList() {
 
     container.appendChild(item);
   });
+}
+
+function moveEncoderPreset(index, direction) {
+  const nextIndex = index + direction;
+  const presets = encoderSettings.encoderPresets || (encoderSettings.encoderPresets = DEFAULT_ENCODER_PRESETS.map(p => ({ ...p })));
+  if (nextIndex < 0 || nextIndex >= presets.length) return;
+  [presets[index], presets[nextIndex]] = [presets[nextIndex], presets[index]];
+  saveEncoderSettings();
+  renderPresetList();
 }
 
 let draggedItem = null;
@@ -470,8 +534,8 @@ function handleDrop(e) {
 
   if (draggedItem === this) return;
 
-  const fromIndex = parseInt(draggedItem.dataset.index);
-  const toIndex = parseInt(this.dataset.index);
+    const fromIndex = parseInt(draggedItem.dataset.index);
+    const toIndex = parseInt(this.dataset.index);
 
   if (fromIndex !== toIndex) {
     const presets = encoderSettings.encoderPresets;
@@ -503,34 +567,49 @@ function resetEncoderPresets() {
 // --- Event listeners ---
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Provider
   document.getElementById('provider').addEventListener('change', () => {
-    const p = document.getElementById('provider').value;
+    invalidateModelFetch();
+    invalidateConnectionTest();
+    invalidateGenerationTest();
     toggleBaseUrl();
+    const p = document.getElementById('provider').value;
     document.getElementById('fetchStatus').textContent = '';
     updateModelUI(p);
+    updateModelCapabilities();
     saveGlobalSettings();
   });
 
-  // Global inputs
   ['apiKey', 'baseUrl', 'maxTokens', 'timeout'].forEach(id => {
     document.getElementById(id)?.addEventListener('change', saveGlobalSettings);
   });
+  ['apiKey', 'baseUrl'].forEach(id => document.getElementById(id)?.addEventListener('input', () => { providerConnectionRevision++; invalidateModelFetch(); invalidateConnectionTest(); invalidateGenerationTest(); updateModelCapabilities(); }));
 
-  // Model select
-  document.getElementById('modelSelect').addEventListener('change', saveGlobalSettings);
+  document.getElementById('modelSelect').addEventListener('change', () => {
+    invalidateModelFetch();
+    invalidateConnectionTest();
+    invalidateGenerationTest();
+    const v = document.getElementById('modelSelect').value;
+    document.getElementById('customModelGroup').style.display = v === '__custom__' ? 'block' : 'none';
+    updateModelCapabilities();
+    saveGlobalSettings();
+  });
 
+  document.getElementById('customModelInput')?.addEventListener('input', () => { invalidateModelFetch(); invalidateConnectionTest(); invalidateGenerationTest(); updateConnectionSummary(); updateModelCapabilities(); });
   document.getElementById('customModelInput')?.addEventListener('change', saveGlobalSettings);
 
-  // Temperature
   const temp = document.getElementById('temperature');
   temp.addEventListener('input', () => {
     document.getElementById('temperatureValue').textContent = temp.value;
+    invalidateGenerationTest();
   });
   temp.addEventListener('change', saveGlobalSettings);
+  document.getElementById('maxTokens').addEventListener('input', () => { updateModelCapabilities(); invalidateGenerationTest(); });
+  document.getElementById('timeout').addEventListener('input', invalidateGenerationTest);
 
-  // Fetch models
   document.getElementById('fetchModelsBtn').addEventListener('click', fetchModels);
+
+  document.getElementById('testConnection').addEventListener('click', testConnection);
+  document.getElementById('testGeneration').addEventListener('click', testGeneration);
 
   // Action inputs
   ['actionName', 'systemPrompt', 'userPromptTemplate', 'inputMode', 'postAction'].forEach(id => {
@@ -546,4 +625,174 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Encoder reset button
   document.getElementById('resetPresetsBtn').addEventListener('click', resetEncoderPresets);
+
+  updateGlobalUI();
+  updateActionUI();
 });
+
+function showConnectionResult(success, message) {
+  const status = document.getElementById('connectionStatus');
+  if (!status) return;
+  status.className = success ? 'status-text ok' : 'status-text err';
+  status.textContent = message;
+}
+
+function updateConnectionSummary() {
+  const summary = document.getElementById('connectionSummary');
+  if (!summary) return;
+  const provider = document.getElementById('provider')?.value || globalSettings.provider || 'openai';
+  const model = getSelectedModel() || globalSettings.model || 'no model';
+  const modelId = document.getElementById('modelIdText');
+  if (modelId) modelId.textContent = `Selected model: ${model}`;
+  const hasKey = !!document.getElementById('apiKey')?.value.trim();
+  summary.textContent = `${provider} · ${model} · ${hasKey ? 'key set' : 'key needed'}`;
+}
+
+function testConnection() {
+  const key = document.getElementById('apiKey').value.trim();
+  const provider = document.getElementById('provider').value;
+  if (!key && provider !== 'openrouter') return showConnectionResult(false, 'Enter an API key first');
+  if (provider === 'custom') {
+    try { if (!getModelsEndpoint(provider, document.getElementById('baseUrl').value.trim())) throw new Error(); }
+    catch (_) { return showConnectionResult(false, 'Enter a valid HTTP or HTTPS custom endpoint URL'); }
+  }
+  if (!saveGlobalSettings()) return;
+  if (!websocket) return showConnectionResult(false, 'Stream Deck connection is unavailable');
+  connectionRequestId = `connection-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  connectionTestSignature = currentConnectionSignature();
+  showConnectionResult(false, 'Testing connection…');
+  websocket.send(JSON.stringify({ event: 'sendToPlugin', action: actionUUID, context: uuid, payload: { event: 'testConnection', requestId: connectionRequestId } }));
+  const requestId = connectionRequestId;
+  connectionTimeoutId = setTimeout(() => { if (connectionRequestId === requestId) { connectionRequestId = null; connectionTimeoutId = null; showConnectionResult(false, 'Connection test timed out'); } }, 30000);
+}
+
+function currentConnectionSignature() {
+  return JSON.stringify(['provider', 'apiKey', 'baseUrl', 'modelSelect', 'customModelInput'].map(id => document.getElementById(id)?.value || ''));
+}
+
+function completeConnectionTest(requestId, success, message) {
+  if (requestId !== connectionRequestId) return;
+  if (connectionTestSignature !== currentConnectionSignature()) return invalidateConnectionTest();
+  clearTimeout(connectionTimeoutId);
+  connectionTimeoutId = null;
+  connectionRequestId = null;
+  showConnectionResult(success, message || (success ? 'Connected' : 'Connection failed'));
+}
+
+function invalidateModelFetch() {
+  modelFetchVersion++;
+  clearTimeout(modelsRequestTimeoutId);
+  modelsRequestTimeoutId = null;
+  modelsRequestId = null;
+  modelsRequestVersion = null;
+  modelsRequestSignature = null;
+  const btn = document.getElementById('fetchModelsBtn');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = 'Fetch';
+  }
+  const status = document.getElementById('fetchStatus');
+  if (status) status.textContent = 'Connection settings changed; fetch again';
+}
+
+function invalidateConnectionTest() {
+  if (!connectionRequestId) return;
+  clearTimeout(connectionTimeoutId);
+  connectionTimeoutId = null;
+  connectionRequestId = null;
+  showConnectionResult(false, 'Settings changed; test again');
+}
+
+function showGenerationStatus(status, message, usedParameters = null) {
+  const el = document.getElementById('generationStatus');
+  if (!el) return;
+  el.className = 'status-text';
+  el.dataset.hasResult = 'true';
+  if (status === 'verified') el.classList.add('ok');
+  else if (status === 'inconclusive') el.classList.add('inconclusive');
+  else el.classList.add('err');
+  const details = usedParameters && typeof usedParameters === 'object' ? ` Used parameters: ${Object.entries(usedParameters).map(([key, value]) => `${key}=${value}`).join(', ')}.` : '';
+  el.textContent = `${message || (status === 'verified' ? 'Generation verified' : status === 'inconclusive' ? 'Generation was inconclusive' : 'Generation test failed')}${details}`;
+}
+
+function invalidateGenerationTest() {
+  const wasPending = !!generationRequestId;
+  const status = document.getElementById('generationStatus');
+  if (!wasPending && status?.dataset.hasResult !== 'true') return;
+  clearTimeout(generationTimeoutId);
+  generationTimeoutId = null;
+  generationRequestId = null;
+  const button = document.getElementById('testGeneration');
+  if (button) { button.disabled = false; button.textContent = 'Test generation'; }
+  showGenerationStatus('inconclusive', 'Settings changed; run the test again.');
+}
+
+function handleGenerationTestResult(result) {
+  if (!result || result.requestId !== generationRequestId) return;
+  if (generationTestSignature !== currentGenerationSignature()) {
+    invalidateGenerationTest();
+    return;
+  }
+  clearTimeout(generationTimeoutId);
+  generationTimeoutId = null;
+  generationRequestId = null;
+  const button = document.getElementById('testGeneration');
+  if (button) { button.disabled = false; button.textContent = 'Test generation'; }
+  applyGenerationCapabilities(result.capabilities);
+  const verified = result.success === true && result.status === 'verified';
+  const status = verified ? 'verified' : result.status === 'inconclusive' ? 'inconclusive' : 'error';
+  showGenerationStatus(status, result.message, result.usedParameters);
+}
+
+function testGeneration() {
+  if (generationRequestId) return;
+  const provider = document.getElementById('provider').value;
+  const key = document.getElementById('apiKey').value.trim();
+  if (!key && provider !== 'openrouter') return showGenerationStatus('error', 'Enter an API key first.');
+  if (provider === 'custom') {
+    try { if (!getModelsEndpoint(provider, document.getElementById('baseUrl').value.trim())) throw new Error(); }
+    catch (_) { return showGenerationStatus('error', 'Enter a valid HTTP or HTTPS custom endpoint URL.'); }
+  }
+  if (!saveGlobalSettings()) return showGenerationStatus('error', 'Fix the highlighted settings before testing.');
+  if (!websocket) return showGenerationStatus('error', 'Stream Deck connection is unavailable.');
+
+  generationRequestId = `generation-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  generationTestSignature = currentGenerationSignature();
+  const requestId = generationRequestId;
+  const button = document.getElementById('testGeneration');
+  button.disabled = true;
+  button.textContent = 'Testing…';
+  showGenerationStatus('inconclusive', 'Generation test is running…');
+  document.getElementById('generationStatus').dataset.hasResult = 'false';
+  generationTimeoutId = setTimeout(() => {
+    if (generationRequestId !== requestId) return;
+    generationRequestId = null;
+    generationTimeoutId = null;
+    button.disabled = false;
+    button.textContent = 'Test generation';
+    showGenerationStatus('error', 'Generation test timed out.');
+  }, generationTestTimeout(globalSettings.timeout));
+  websocket.send(JSON.stringify({ event: 'sendToPlugin', action: actionUUID, context: uuid, payload: { event: 'testGeneration', requestId } }));
+}
+
+function currentGenerationSignature() {
+  return JSON.stringify([currentConnectionSignature(), document.getElementById('temperature').value, document.getElementById('maxTokens').value, document.getElementById('timeout').value]);
+}
+
+function applyGenerationCapabilities(capabilities) {
+  if (!capabilities || typeof capabilities !== 'object') return;
+  const provider = document.getElementById('provider').value;
+  const id = getSelectedModel();
+  if (!id) return;
+  const candidate = sanitizeModelInfo([{ id, name: id, ...capabilities }])[0];
+  if (!candidate || !Object.keys(capabilities).some(key => ['temperatureSupport', 'temperatureMax', 'outputTokenLimit', 'reasoning'].includes(key))) return;
+  const models = sanitizeModelInfo((globalSettings.modelCache || {})[provider]);
+  const index = models.findIndex(model => model.id === id);
+  if (index >= 0) models[index] = { ...models[index], ...candidate };
+  else models.push(candidate);
+  globalSettings.modelCache = globalSettings.modelCache || {};
+  globalSettings.modelCache[provider] = models;
+  modelCacheRevisionByProvider[provider] = providerConnectionRevision;
+  updateModelCapabilities();
+  saveGlobalSettings();
+}

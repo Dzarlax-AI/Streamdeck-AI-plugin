@@ -9,6 +9,8 @@ Stream Deck plugin for AI-powered text processing. Captures selected text or cli
 - **AI Text Action** - Regular key with customizable prompts
 - **AI Prompt Selector** - Stream Deck+ encoder with preset switching
 
+**Runtime:** Node.js 24, npm SDK 3.0.0, Stream Deck 7.1+, macOS 13.5+ or Windows 10/11 64-bit. The manifest's `SDKVersion` is independent of the npm SDK version.
+
 ---
 
 ## Architecture
@@ -194,7 +196,7 @@ streamdeck restart com.dzarlax.ai-assistant
 gpt-5, gpt-4.1, gpt-4.1-mini, o3, o4-mini
 
 ### Anthropic
-claude-sonnet-4-20250514, claude-3-7-sonnet-latest, claude-3-5-haiku-20241022, claude-3-opus-20240229
+Use the fetched Anthropic catalog or a manually entered active model ID; avoid hardcoded fallback lists.
 
 ### Google Gemini
 gemini-3-flash-preview, gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite
@@ -209,16 +211,20 @@ anthropic/claude-sonnet-4, openai/gpt-4.1, openai/gpt-5, google/gemini-2.5-pro, 
 ### Shared Logic (`processWithAI`)
 Both actions use shared `processWithAI()` function:
 1. Get global settings (API key, model, etc.)
-2. Capture input (selection or clipboard)
+2. Capture input (selection must update the native clipboard revision; clipboard mode reads existing text)
 3. Build prompt from template
 4. Call AI API
 5. Output result (paste or copy)
+
+A shared guard covers the entire operation across keys, dial presses, and touch taps. Additional triggers are rejected while busy. Built-in provider endpoints ignore Custom URLs, and access checks only request a model list. Model discovery runs in Node through correlated Inspector commands. A separate generation probe uses fixed synthetic prompts, a 1/128 output-token budget, and no clipboard access. It shares the action busy guard. Session capabilities have a one-hour TTL and hashed identity keys. Never treat missing metadata as an unsupported capability.
 
 ### System Utils (`src/system-utils.ts`)
 - `copyToClipboard(text)` - spawn + pbcopy with UTF-8 encoding
 - `pasteFromClipboard()` - pbpaste with 10MB maxBuffer
 - `simulateCopy()` - key code 8 + Cmd (layout-independent)
 - `simulatePaste()` - key code 9 + Cmd (layout-independent)
+- `captureSelectedText()` - verifies changed and stable clipboard revisions using NSPasteboard on macOS or GetClipboardSequenceNumber on Windows; does not clear the clipboard
+- Windows clipboard reads preserve Unicode and trailing whitespace using PowerShell 5 and `Get-Clipboard -Raw`
 
 ### Encoder Feedback
 ```typescript
@@ -237,6 +243,9 @@ await action.setFeedback({
 npm run build    # Build plugin
 npm run watch    # Watch mode with auto-restart
 npm run link     # Link to Stream Deck
+npm test         # Isolated regression tests, including both platform branches
+npm run typecheck
+npm run qa:native # Native clipboard revision check; -- --selection opts into Copy
 ```
 
 ## Debug
@@ -258,7 +267,7 @@ streamdeck restart com.dzarlax.ai-assistant
 
 ```json
 {
-  "@elgato/streamdeck": "^1.4.1",
+  "@elgato/streamdeck": "3.0.0",
   "axios": "^1.6.0"
 }
 ```
