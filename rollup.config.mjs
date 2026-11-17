@@ -3,6 +3,7 @@ import typescript from "@rollup/plugin-typescript";
 import commonjs from "@rollup/plugin-commonjs";
 import json from "@rollup/plugin-json";
 import * as fs from "fs";
+import { createPluginManifest } from "./scripts/plugin-manifest.mjs";
 
 export default {
   input: {
@@ -47,8 +48,12 @@ export default {
           }
         });
 
-        // Copy manifest
-        fs.copyFileSync("manifest.json", `${dest}/manifest.json`);
+        // Derive the installer's version from the release's single source of truth.
+        const manifest = createPluginManifest(
+          JSON.parse(fs.readFileSync("manifest.json", "utf8")),
+          JSON.parse(fs.readFileSync("package.json", "utf8"))
+        );
+        fs.writeFileSync(`${dest}/manifest.json`, JSON.stringify(manifest, null, 2) + "\n");
 
         // Create package.json for ESM support in root folder
         fs.writeFileSync(`${dest}/package.json`, '{ "type": "module" }');
@@ -81,6 +86,8 @@ export default {
               for (const cssFile of cssFiles) {
                 fs.copyFileSync(`property-inspector/css/${cssFile}`, `${dest}/ui/css/${cssFile}`);
               }
+            } else if (fs.statSync(`property-inspector/${file}`).isDirectory()) {
+              fs.cpSync(`property-inspector/${file}`, `${dest}/ui/${file}`, { recursive: true });
             } else {
               fs.copyFileSync(`property-inspector/${file}`, `${dest}/ui/${file}`);
             }
@@ -99,7 +106,10 @@ export default {
             } else if (file.endsWith(".html")) {
               // Rename index.html to global-settings.html for the UI folder
               const destName = file === "index.html" ? "global-settings.html" : file;
-              fs.copyFileSync(`global-settings/${file}`, `${dest}/ui/${destName}`);
+              const html = fs.readFileSync(`global-settings/${file}`, "utf8")
+                .replaceAll("../property-inspector/css/sdpi.css", "css/sdpi.css")
+                .replaceAll("../property-inspector/js/shared-settings.js", "js/shared-settings.js");
+              fs.writeFileSync(`${dest}/ui/${destName}`, html);
             } else {
               fs.copyFileSync(`global-settings/${file}`, `${dest}/ui/${file}`);
             }

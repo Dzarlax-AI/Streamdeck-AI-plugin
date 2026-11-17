@@ -5,15 +5,18 @@ import streamDeck, {
   WillAppearEvent,
   DialRotateEvent,
   DialDownEvent,
-  TouchTapEvent
+  TouchTapEvent,
+  DidReceiveSettingsEvent,
+  WillDisappearEvent,
+  SendToPluginEvent
 } from '@elgato/streamdeck';
 import type { JsonObject } from '@elgato/utils';
 
-import { callAI, AIRequestConfig } from './api-client.js';
+import { callAI, listModels, testConnection, testGeneration, AIRequestConfig } from './api-client.js';
 import {
   copyToClipboard,
   pasteFromClipboard,
-  simulateCopy,
+  captureSelectedText,
   simulatePaste
 } from './system-utils.js';
 
@@ -127,13 +130,15 @@ async function processWithAI(opts: {
   if (!globalSettings.apiKey) {
     throw new Error('API key not configured');
   }
+  const config = requestConfig(globalSettings);
+  if (!config.model) {
+    throw new Error('Select a model in settings');
+  }
 
   let textToProcess = '';
 
   if (opts.inputMode === 'selection') {
-    log('Attempting simulateCopy()');
-    await simulateCopy();
-    textToProcess = await pasteFromClipboard();
+    textToProcess = await captureSelectedText();
   } else {
     textToProcess = await pasteFromClipboard();
   }
@@ -144,18 +149,9 @@ async function processWithAI(opts: {
     throw new Error('No text captured from selection/clipboard');
   }
 
-  const userPrompt = opts.userPromptTemplate.replace('{{text}}', textToProcess);
-  log(`Calling AI with provider: ${globalSettings.provider}`);
+  const userPrompt = opts.userPromptTemplate.replaceAll('{{text}}', () => textToProcess);
 
-  const config: AIRequestConfig = {
-    provider: globalSettings.provider || 'openai',
-    apiKey: globalSettings.apiKey,
-    model: globalSettings.model || 'gpt-4o',
-    baseUrl: globalSettings.baseUrl,
-    temperature: globalSettings.temperature,
-    maxTokens: globalSettings.maxTokens,
-    timeout: globalSettings.timeout
-  };
+  log(`Calling AI with provider: ${config.provider}, model: ${JSON.stringify(config.model)}`);
 
   const result = await callAI(opts.systemPrompt, userPrompt, config);
   log(`AI responded successfully. Result length: ${result.text.length}`);
@@ -169,15 +165,75 @@ async function processWithAI(opts: {
   }
 }
 
+let busy = false;
+const statusTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function clearStatus(id: string): void {
+  const timer = statusTimers.get(id);
+  if (timer) clearTimeout(timer);
+  statusTimers.delete(id);
+}
+function resetLater(id: string, delay: number, fn: () => Promise<void>): void {
+  clearStatus(id);
+  statusTimers.set(id, setTimeout(() => { statusTimers.delete(id); fn().catch(() => {}); }, delay));
+}
+function requestConfig(settings: GlobalSettings): AIRequestConfig {
+  return {
+    provider: settings.provider || 'openai', apiKey: settings.apiKey || '',
+    model: settings.model?.trim() ?? 'gpt-4o', baseUrl: settings.baseUrl,
+    temperature: settings.temperature, maxTokens: settings.maxTokens, timeout: settings.timeout
+  };
+}
+async function settingsRequest(ev: SendToPluginEvent<JsonObject, any>): Promise<void> {
+  const payload = ev.payload;
+  const command = payload?.event;
+  if (typeof command !== 'string' || !['testConnection', 'fetchModels', 'testGeneration'].includes(command) ||
+      typeof payload.requestId !== 'string' || !payload.requestId || payload.requestId.length > 200) return;
+  let result: JsonObject;
+  let ownsBusy = false;
+  try {
+    if (command === 'testGeneration') {
+      if (busy) {
+        result = { success: false, status: 'error', message: 'Another AI action is running. Try again when it finishes.' };
+      } else {
+        busy = true;
+        ownsBusy = true;
+      }
+    }
+    const settings = await streamDeck.settings.getGlobalSettings<GlobalSettings>();
+    const config = requestConfig(settings);
+    if (command === 'fetchModels') {
+      // API adapters return JSON-only model metadata, never credentials.
+      const catalog = await listModels(config);
+      result = { success: true, models: catalog.models.map(model => ({ ...model })), truncated: catalog.truncated };
+    } else if (command === 'testConnection') {
+      result = await testConnection(config);
+    } else if (ownsBusy) {
+      const { capabilities, ...probe } = await testGeneration(config);
+      result = { ...probe, ...(capabilities ? { capabilities: { ...capabilities } } : {}) };
+    }
+  } catch {
+    result = { success: false, ...(command === 'testGeneration' ? {status: 'error'} : {}), message: 'Unable to complete provider check. Check access and connection settings.' };
+  } finally {
+    if (ownsBusy) busy = false;
+  }
+  if (streamDeck.ui.action?.id === ev.action.id) {
+    const event = command === 'fetchModels' ? 'modelsResult' : command === 'testGeneration' ? 'generationTestResult' : 'connectionTestResult';
+    await streamDeck.ui.sendToPropertyInspector({ event, requestId: payload.requestId, ...result! });
+  }
+}
+
 @action({ UUID: 'com.dzarlax.ai-assistant.text-action' })
 class AITextAction extends SingletonAction<ActionSettings> {
 
   override async onKeyDown(ev: KeyDownEvent<ActionSettings>): Promise<void> {
     const { settings } = ev.payload;
 
-    log(`Key pressed. Action: ${settings.actionName || 'unnamed'}, input: ${settings.inputMode || 'selection'}`);
+    if (busy) { await ev.action.showAlert(); return; }
+    busy = true;
+    clearStatus(ev.action.id);
 
     try {
+      log(`Key pressed. Action: ${settings.actionName || 'unnamed'}, input: ${settings.inputMode || 'selection'}`);
       if (ev.action.isKey()) {
         await ev.action.setState(1);
       }
@@ -191,9 +247,7 @@ class AITextAction extends SingletonAction<ActionSettings> {
 
       if (ev.action.isKey()) {
         await ev.action.setState(2);
-        setTimeout(() => {
-          ev.action.setState(0).catch(() => { });
-        }, 1500);
+        resetLater(ev.action.id, 1500, async () => { if (ev.action.isKey()) await ev.action.setState(0); });
       }
       log('Action completed successfully');
 
@@ -201,13 +255,17 @@ class AITextAction extends SingletonAction<ActionSettings> {
       log(`Error: ${error.message}`);
       if (ev.action.isKey()) {
         await ev.action.setState(3);
-        setTimeout(() => {
-          ev.action.setState(0).catch(() => { });
-        }, 3000);
+        resetLater(ev.action.id, 3000, async () => { if (ev.action.isKey()) await ev.action.setState(0); });
       }
       await ev.action.showAlert();
+    } finally {
+      busy = false;
     }
   }
+
+  override async onSendToPlugin(ev: SendToPluginEvent<JsonObject, ActionSettings>): Promise<void> { await settingsRequest(ev); }
+
+  override async onWillDisappear(ev: WillDisappearEvent<ActionSettings>): Promise<void> { clearStatus(ev.action.id); }
 
   override async onWillAppear(ev: WillAppearEvent<ActionSettings>): Promise<void> {
     if (ev.action.isKey()) {
@@ -223,12 +281,12 @@ class PromptSelectorAction extends SingletonAction<EncoderSettings> {
   private encoderSettings = new Map<string, EncoderSettings>();
 
   private getActivePresets(settings: EncoderSettings): typeof PRESETS {
-    if (!settings.encoderPresets || settings.encoderPresets.length === 0) {
+    if (!Array.isArray(settings.encoderPresets) || settings.encoderPresets.length === 0) {
       return PRESETS;
     }
 
     return settings.encoderPresets
-      .filter(p => p.enabled)
+      .filter(p => p?.enabled)
       .map(p => PRESETS.find(preset => preset.key === p.key))
       .filter((p): p is typeof PRESETS[0] => p !== undefined);
   }
@@ -319,21 +377,22 @@ class PromptSelectorAction extends SingletonAction<EncoderSettings> {
   }
 
   private async executePreset(ev: { action: any }, contextId: string, settings: EncoderSettings, source: string): Promise<void> {
-    this.encoderSettings.set(contextId, settings);
-
-    const activePresets = this.getActivePresets(settings);
-    const index = this.getIndex(contextId, activePresets.length);
-    const preset = activePresets[index];
-
-    if (!preset) {
-      log(`${source}: no active presets`);
-      await ev.action.showAlert();
-      return;
-    }
-
-    log(`${source}: executing preset "${preset.name}"`);
-
+    if (busy) { await ev.action.showAlert(); return; }
+    busy = true;
     try {
+      clearStatus(contextId);
+      this.encoderSettings.set(contextId, settings);
+      const activePresets = this.getActivePresets(settings);
+      const index = this.getIndex(contextId, activePresets.length);
+      const preset = activePresets[index];
+      if (!preset) {
+        log(`${source}: no active presets`);
+        await ev.action.showAlert();
+        return;
+      }
+
+      log(`${source}: executing preset "${preset.name}"`);
+
       await ev.action.setFeedback({
         title: preset.name,
         value: 'Processing...',
@@ -354,9 +413,7 @@ class PromptSelectorAction extends SingletonAction<EncoderSettings> {
       });
       log(`${source} completed: ${preset.name}`);
 
-      setTimeout(() => {
-        this.updateDisplay(ev, contextId, settings).catch(() => { });
-      }, 1500);
+      resetLater(contextId, 1500, () => this.updateDisplay(ev, contextId, this.encoderSettings.get(contextId) || settings));
 
     } catch (error: any) {
       log(`${source} error: ${error.message}`);
@@ -367,10 +424,27 @@ class PromptSelectorAction extends SingletonAction<EncoderSettings> {
       });
       await ev.action.showAlert();
 
-      setTimeout(() => {
-        this.updateDisplay(ev, contextId, settings).catch(() => { });
-      }, 3000);
+      resetLater(contextId, 3000, () => this.updateDisplay(ev, contextId, this.encoderSettings.get(contextId) || settings));
+    } finally {
+      busy = false;
     }
+  }
+
+  override async onSendToPlugin(ev: SendToPluginEvent<JsonObject, EncoderSettings>): Promise<void> { await settingsRequest(ev); }
+
+  override async onDidReceiveSettings(ev: DidReceiveSettingsEvent<EncoderSettings>): Promise<void> {
+    const id = ev.action.id;
+    const settings = ev.payload.settings;
+    this.encoderSettings.set(id, settings);
+    if (settings.presetIndex !== undefined) this.setIndex(id, settings.presetIndex, this.getActivePresets(settings).length);
+    clearStatus(id);
+    if (ev.action.isDial()) await this.updateDisplay(ev, id, settings);
+  }
+
+  override async onWillDisappear(ev: WillDisappearEvent<EncoderSettings>): Promise<void> {
+    clearStatus(ev.action.id);
+    this.encoderSettings.delete(ev.action.id);
+    this.presetIndices.delete(ev.action.id);
   }
 
   override async onDialDown(ev: DialDownEvent<EncoderSettings>): Promise<void> {
@@ -383,8 +457,3 @@ class PromptSelectorAction extends SingletonAction<EncoderSettings> {
 }
 
 export { AITextAction, PromptSelectorAction };
-
-streamDeck.settings.onDidReceiveGlobalSettings((ev) => {
-  const safe = { ...ev.settings, apiKey: ev.settings.apiKey ? '***' : undefined };
-  streamDeck.logger.info(`Received global settings: ${JSON.stringify(safe)}`);
-});

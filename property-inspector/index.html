@@ -3,171 +3,99 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Assistant Settings</title>
+  <title>AI Assistant</title>
   <link rel="stylesheet" href="css/sdpi.css">
 </head>
 <body>
-  <div class="sdpi-wrapper">
-
-    <!-- Privacy Notice -->
-    <div class="sdpi-item" style="padding: 8px; background: rgba(255, 152, 0, 0.1); border-radius: 4px; margin-bottom: 8px;">
-      <div class="help-text" style="color: #ffb74d; font-size: 11px;">
-        Your text will be sent to the selected AI provider's API. See <a href="https://github.com/dzarlax/streamdeck-ai-plugin/blob/main/PRIVACY.md" style="color: #64b5f6;">Privacy Policy</a>.
-      </div>
-    </div>
-
-    <!-- API Configuration -->
-    <div class="sdpi-heading" onclick="toggleSection('apiSection')">API Configuration</div>
-    <div id="apiSection" class="section-content">
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Provider</div>
-        <select class="sdpi-item-value select" id="provider">
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic (Claude)</option>
-          <option value="gemini">Google Gemini</option>
-          <option value="openrouter">OpenRouter</option>
-          <option value="custom">Custom Endpoint</option>
-        </select>
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">API Key</div>
-        <input class="sdpi-item-value" type="password" id="apiKey" placeholder="Enter your API key...">
-      </div>
-
-      <div class="sdpi-item" id="baseUrlGroup" style="display: none;">
-        <div class="sdpi-item-label">Base URL</div>
-        <input class="sdpi-item-value" type="text" id="baseUrl" placeholder="https://api.example.com/v1">
-      </div>
-
-      <div class="sdpi-item" id="modelSelectRow">
-        <div class="sdpi-item-label">Model</div>
-        <div class="sdpi-item-value model-row">
-          <select class="select" id="modelSelect" style="flex:1"></select>
-          <button class="btn" id="fetchModelsBtn" title="Load models from API">Fetch</button>
-        </div>
-      </div>
-
-      <div class="sdpi-item" id="customModelGroup" style="display: none;">
-        <div class="sdpi-item-label">Model</div>
-        <input class="sdpi-item-value" type="text" id="customModelInput" placeholder="model-name">
-      </div>
-
-      <div id="fetchStatus" class="help-text" style="text-align:right; padding-right:14px;"></div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Temperature</div>
-        <input class="sdpi-item-value" type="range" id="temperature" min="0" max="2" step="0.1" value="0.7" style="width:160px">
-        <span class="temp-value" id="temperatureValue">0.7</span>
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Max Tokens</div>
-        <input class="sdpi-item-value" type="number" id="maxTokens" value="4096" min="100" max="128000" style="width:100px">
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Timeout</div>
-        <input class="sdpi-item-value" type="number" id="timeout" value="30" min="5" max="120" style="width:60px">
-        <span class="unit">sec</span>
-      </div>
-    </div>
-
-    <div id="divider1" class="divider"></div>
-
-    <!-- Prompt Settings (hidden for Encoder / Prompt Selector) -->
+  <main class="sdpi-wrapper">
+    <header class="brand-header">
+      <span class="brand-mark" aria-hidden="true">AI</span>
+      <div><h1>AI Assistant</h1><p>Stream Deck text tools</p></div>
+    </header>
     <div id="promptBlock">
-      <div class="sdpi-heading" onclick="toggleSection('promptSection')">Prompt Settings</div>
-      <div id="promptSection" class="section-content">
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Action Name</div>
-        <input class="sdpi-item-value" type="text" id="actionName" placeholder="My AI Action">
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Input</div>
-        <select class="sdpi-item-value select" id="inputMode">
-          <option value="selection">Selected Text (Copy First)</option>
-          <option value="clipboard">Clipboard Content</option>
-        </select>
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">System Prompt</div>
-        <span class="sdpi-item-value">
-          <textarea id="systemPrompt" placeholder="You are a helpful assistant..."></textarea>
-        </span>
-        <div class="help-text">Defines AI behavior and role</div>
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">User Template</div>
-        <span class="sdpi-item-value">
-          <textarea id="userPromptTemplate" placeholder="{{text}}"></textarea>
-        </span>
-        <div class="help-text">Use {{text}} for captured content</div>
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">After Processing</div>
-        <select class="sdpi-item-value select" id="postAction">
-          <option value="paste">Paste Result</option>
-          <option value="copy">Copy to Clipboard</option>
-        </select>
-      </div>
-    </div>
-    </div>
-
-    <div id="divider2" class="divider"></div>
-
-    <!-- Quick Presets (hidden for Encoder / Prompt Selector) -->
-    <div id="presetBlock">
-      <div class="sdpi-heading" onclick="toggleSection('presetSection')">Quick Presets</div>
-      <div id="presetSection" class="section-content">
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Preset</div>
-        <select class="sdpi-item-value select" id="presetSelector">
-          <option value="">Choose a preset...</option>
-          <option value="fix-grammar">Fix Grammar & Spelling</option>
-          <option value="translate-en">Translate to English</option>
-          <option value="translate-ru">Translate to Russian</option>
-          <option value="translate-sr">Translate to Serbian</option>
-          <option value="translate-de">Translate to German</option>
-          <option value="summarize">Summarize</option>
-          <option value="explain-code">Explain Code</option>
-          <option value="professional">Make Professional</option>
-          <option value="casual">Make Casual</option>
-        </select>
-      </div>
-
-      <div class="sdpi-item">
-        <div class="sdpi-item-label"></div>
-        <button class="sdpi-item-value btn btn-block" id="loadPresetBtn">Apply Preset</button>
-      </div>
-    </div>
-    </div>
-
-    <!-- Encoder Preset Configuration (shown only for Prompt Selector) -->
-    <div id="encoderSection" style="display: none;">
-      <div class="sdpi-heading">Encoder Presets</div>
-      <div class="sdpi-item">
-        <div class="sdpi-item-label">Configure</div>
-        <div class="sdpi-item-value">
-          <p class="help-text" style="margin-bottom: 8px;">Drag to reorder. Uncheck to hide from encoder.</p>
-          <div class="preset-list" id="presetList"></div>
+      <section class="panel panel-primary">
+        <h2 class="sdpi-heading">Preset</h2>
+        <div class="sdpi-item">
+          <label class="sdpi-item-label" for="presetSelector">Quick preset</label>
+          <select class="sdpi-item-value select" id="presetSelector">
+            <option value="">Choose a preset…</option><option value="fix-grammar">Fix Grammar &amp; Spelling</option>
+            <option value="translate-en">Translate to English</option><option value="translate-ru">Translate to Russian</option>
+            <option value="translate-sr">Translate to Serbian</option><option value="translate-de">Translate to German</option>
+            <option value="summarize">Summarize</option><option value="explain-code">Explain Code</option>
+            <option value="professional">Make Professional</option><option value="casual">Make Casual</option>
+          </select>
         </div>
-      </div>
-      <div class="sdpi-item">
-        <div class="sdpi-item-label"></div>
-        <button class="sdpi-item-value btn btn-block" id="resetPresetsBtn">Reset to Defaults</button>
-      </div>
+        <button class="btn btn-block" id="loadPresetBtn" type="button">Apply Preset</button>
+      </section>
+
+      <section class="panel">
+        <h2 class="sdpi-heading">Input and result</h2>
+        <div class="sdpi-item">
+          <label class="sdpi-item-label" for="actionName">Action name</label>
+          <input class="sdpi-item-value" type="text" id="actionName" placeholder="My AI Action">
+        </div>
+        <div class="sdpi-item">
+          <label class="sdpi-item-label" for="inputMode">Input</label>
+          <select class="sdpi-item-value select" id="inputMode">
+            <option value="selection">Selected text (copy first)</option><option value="clipboard">Clipboard content</option>
+          </select>
+        </div>
+        <div class="sdpi-item">
+          <label class="sdpi-item-label" for="postAction">Result</label>
+          <select class="sdpi-item-value select" id="postAction"><option value="paste">Paste result</option><option value="copy">Copy to clipboard</option></select>
+        </div>
+      </section>
+
+      <details class="panel" id="promptDetails">
+        <summary class="sdpi-heading">Custom prompt</summary>
+        <label class="field-label" for="systemPrompt">System prompt</label>
+        <textarea id="systemPrompt" placeholder="You are a helpful assistant…"></textarea>
+        <p class="help-text">Defines the AI role and behavior.</p>
+        <label class="field-label" for="userPromptTemplate">User template</label>
+        <textarea id="userPromptTemplate" placeholder="{{text}}"></textarea>
+        <p class="help-text">Use {{text}} where captured content should appear.</p>
+      </details>
     </div>
 
-  </div>
+    <section id="encoderSection" class="panel" style="display:none">
+      <h2 class="sdpi-heading">Encoder presets</h2>
+      <p class="help-text">Choose visible presets and change their order with the arrow buttons.</p>
+      <div class="preset-list" id="presetList"></div>
+      <button class="btn btn-block secondary" id="resetPresetsBtn" type="button">Reset to defaults</button>
+    </section>
 
+    <details class="panel" id="connectionDetails">
+      <summary class="sdpi-heading"><span class="summary-title">AI connection</span><span id="connectionSummary" class="summary-note"></span></summary>
+      <p class="help-text">Provider, API key, endpoint, and model are shared by all AI actions.</p>
+      <div class="sdpi-item"><label class="sdpi-item-label" for="provider">Provider</label>
+        <select class="sdpi-item-value select" id="provider"><option value="openai">OpenAI</option><option value="anthropic">Anthropic (Claude)</option><option value="gemini">Google Gemini</option><option value="openrouter">OpenRouter</option><option value="custom">Custom endpoint</option></select>
+      </div>
+      <div class="sdpi-item"><label class="sdpi-item-label" for="apiKey">API key</label><input class="sdpi-item-value" type="password" id="apiKey" autocomplete="off" placeholder="Enter your API key"></div>
+      <div class="sdpi-item" id="baseUrlGroup" style="display:none"><label class="sdpi-item-label" for="baseUrl">Custom URL</label><input class="sdpi-item-value" type="url" id="baseUrl" placeholder="https://api.example.com/v1"><p class="help-text">OpenAI-compatible endpoint. Use a base URL ending in /v1 or a full endpoint URL.</p></div>
+      <div class="sdpi-item" id="modelSelectRow"><label class="sdpi-item-label" for="modelSelect">Model</label><div class="sdpi-item-value model-row"><select class="select" id="modelSelect" aria-label="Model"></select><button class="btn" id="fetchModelsBtn" type="button">Fetch</button></div></div>
+      <div class="sdpi-item" id="customModelGroup" style="display:none"><label class="sdpi-item-label" for="customModelInput">Model ID</label><input class="sdpi-item-value" type="text" id="customModelInput" placeholder="model-name"></div>
+      <div class="model-id" id="modelIdText" aria-live="polite"></div>
+      <div id="fetchStatus" class="help-text" role="status" aria-live="polite"></div>
+      <div class="sdpi-item"><span class="sdpi-item-label">Access</span><button class="sdpi-item-value btn secondary" id="testConnection" type="button">Check access</button></div>
+      <div class="status-text" id="connectionStatus" role="status" aria-live="polite">Not tested</div>
+      <p class="help-text">Checks model catalogue access only. It does not generate text.</p>
+      <div class="sdpi-item"><span class="sdpi-item-label">Generation</span><button class="sdpi-item-value btn" id="testGeneration" type="button">Test generation</button></div>
+      <div class="status-text" id="generationStatus" role="status" aria-live="polite">Not tested</div>
+      <p class="help-text">Uses 1 output token for known nonreasoning models; up to 128 for reasoning or unknown models. Input tokens are also billed. Never sends clipboard text.</p>
+    </details>
+
+    <details class="panel" id="advancedDetails">
+      <summary class="sdpi-heading">Advanced parameters</summary>
+      <div class="sdpi-item"><label class="sdpi-item-label" for="temperature">Temperature</label><input class="sdpi-item-value" type="range" id="temperature" min="0" max="2" step="0.1" value="0.7"><output class="temp-value" id="temperatureValue">0.7</output></div>
+      <p class="help-text capability-note" id="temperatureHint">Temperature support not yet verified for this model.</p>
+      <div class="sdpi-item"><label class="sdpi-item-label" for="maxTokens">Max tokens</label><input class="sdpi-item-value short-input" type="number" id="maxTokens" value="4096" min="100" max="128000"></div>
+      <p class="help-text capability-note" id="maxTokensHint">Maximum is not yet verified for this model.</p>
+      <div class="sdpi-item"><label class="sdpi-item-label" for="timeout">Timeout</label><input class="sdpi-item-value short-input" type="number" id="timeout" value="30" min="5" max="120"><span class="unit">sec</span></div>
+      <div id="settingsSaveStatus" class="status-text err" role="status"></div>
+    </details>
+    <p class="help-text privacy-note">Text is sent to the selected AI provider. See the <a href="https://github.com/dzarlax/streamdeck-ai-plugin/blob/main/PRIVACY.md">Privacy Policy</a>.</p>
+  </main>
+  <script src="js/shared-settings.js"></script>
   <script src="js/property-inspector.js"></script>
 </body>
 </html>

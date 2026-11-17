@@ -1,6 +1,6 @@
 # Privacy Policy - AI Assistant for Stream Deck
 
-**Last Updated:** February 2026
+**Last Updated:** November 2026
 
 ## Data Collection
 
@@ -25,13 +25,14 @@ Your API key and text are transmitted directly from your computer to these servi
 
 ## Local Storage
 
-The plugin stores the following settings **locally** on your device via Stream Deck's secure settings storage:
+The plugin stores the following settings **locally** on your device via Stream Deck's plugin-wide global settings:
 
 - API provider selection
-- API key (encrypted by Stream Deck)
+- User-provided API key (kept in global settings, not in exported action settings)
 - Model selection
-- Custom prompts
 - User preferences (temperature, timeout, etc.)
+
+Custom prompts are stored locally in the settings for each action.
 
 ## No Analytics
 

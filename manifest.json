@@ -1,27 +1,28 @@
 {
   "UUID": "com.dzarlax.ai-assistant",
   "Name": "AI Assistant",
-  "Version": "1.0.0.0",
+  "Version": "1.0.6.0",
   "Author": "dzarlax",
   "Description": "AI-powered text processing with OpenAI, Anthropic Claude, Google Gemini, OpenRouter, or custom endpoints. Includes 9 built-in presets: Fix Grammar, Translate (EN/RU/SR/DE), Summarize, Explain Code, Professional, and Casual tone rewrites.",
   "Icon": "imgs/pluginIcon",
   "URL": "https://github.com/dzarlax/streamdeck-ai-plugin",
+  "SupportURL": "https://github.com/dzarlax/streamdeck-ai-plugin#configuration",
   "Category": "AI Assistant",
   "CategoryIcon": "imgs/categoryIcon",
   "CodePath": "bin/launcher.js",
   "CodePathMac": "bin/launcher.js",
   "CodePathWin": "bin/launcher.js",
   "Nodejs": {
-    "Version": "20"
+    "Version": "24"
   },
   "SDKVersion": 3,
   "Software": {
-    "MinimumVersion": "6.9"
+    "MinimumVersion": "7.1"
   },
   "OS": [
     {
       "Platform": "mac",
-      "MinimumVersion": "10.15"
+      "MinimumVersion": "13.5"
     },
     {
       "Platform": "windows",
@@ -63,7 +64,9 @@
       "UUID": "com.dzarlax.ai-assistant.prompt-selector",
       "Name": "AI Prompt Selector",
       "Icon": "imgs/encoderIdle",
-      "Controllers": ["Encoder"],
+      "Controllers": [
+        "Encoder"
+      ],
       "Encoder": {
         "Icon": "imgs/encoderIdle",
         "layout": "$B1",
